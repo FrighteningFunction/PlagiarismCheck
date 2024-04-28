@@ -87,17 +87,17 @@ struct ChequeredSquare : public Intersectable {
 	}
 
 	Hit intersect(const Ray& ray) {
-		Hit hit;
+		Hit mark;
 		float t = -(dot(n, ray.start) + p) / dot(n, ray.dir);
 		if (t < 0) return Hit();
 
 		vec3 pos = ray.start + ray.dir * t;
 		if (isInsideSquare(pos)) {
-			hit.t = t;
-			hit.position = pos;
-			hit.material = isEvenSquare(pos) ? material : material2;
-			hit.normal = n;
-			return hit;
+			mark.t = t;
+			mark.position = pos;
+			mark.material = isEvenSquare(pos) ? material : material2;
+			mark.normal = n;
+			return mark;
 		}
 		return Hit();
 	}
@@ -128,7 +128,7 @@ struct Cone : public Intersectable {
 	}
 
 	Hit intersect(const Ray& ray) {
-		Hit hit;
+		Hit mark;
 		vec3 s = ray.start;
 		vec3 d = ray.dir;
 		vec3 z = s - p;
@@ -137,21 +137,21 @@ struct Cone : public Intersectable {
 		float b = 2 * dot(d, n) * dot(z, n) - 2 * dot(d, z) * cos_2;
 		float c = dot(z, n) * dot(z, n) - dot(z, z) * cos_2;
 		float dis = b * b - 4.0f * a * c;
-		if (dis < 0) return hit;
+		if (dis < 0) return mark;
 
 		float t1 = (-b + sqrtf(dis)) / (2.0f * a);
 		float t2 = (-b - sqrtf(dis)) / (2.0f * a);
-		if (t1 <= 0 && t2 <= 0) return hit;
+		if (t1 <= 0 && t2 <= 0) return mark;
 
 		float t = (t2 > 0) ? t1 : t2;
 		vec3 pos = s + d * t;
-		if (dot(pos - p, n) > h || dot(pos - p, n) < 0) return hit;
+		if (dot(pos - p, n) > h || dot(pos - p, n) < 0) return mark;
 
-		hit.t = t;
-		hit.position = pos;
-		hit.normal = normalize(2 * dot(pos - p, n) * n - 2 * (pos - p) * cos_2);
-		hit.material = material;
-		return hit;
+		mark.t = t;
+		mark.position = pos;
+		mark.normal = normalize(2 * dot(pos - p, n) * n - 2 * (pos - p) * cos_2);
+		mark.material = material;
+		return mark;
 	}
 };
 
@@ -165,7 +165,7 @@ struct Cylinder : public Intersectable {
 	}
 
 	Hit intersect(const Ray& ray) {
-		Hit hit;
+		Hit mark;
 		vec3 s = ray.start;
 		vec3 d = ray.dir;
 		vec3 z = s - p;
@@ -173,19 +173,19 @@ struct Cylinder : public Intersectable {
 		float b = 2 * dot(d, z) - 4 * dot(d, v) * dot(v, z) + 2 * dot(d, v) * dot(v, v) * dot(v, z);
 		float c = -r * r - 2 * powf(dot(v, z), 2) + dot(v, v) * powf(dot(v, z), 2) + dot(z, z);
 		float dis = b * b - 4.0f * a * c;
-		if (dis < 0) return hit;
+		if (dis < 0) return mark;
 
 		float t1 = (-b + sqrtf(dis)) / 2.0f / a;
 		float t2 = (-b - sqrtf(dis)) / 2.0f / a;
-		if (t1 <= 0 && t2 <= 0) return hit;
+		if (t1 <= 0 && t2 <= 0) return mark;
 
-		hit.t = (t2 > 0) ? t2 : t1;
-		hit.position = s + d * hit.t;
-		if (dot(hit.position - p, v) > h || dot(hit.position - p, v) < 0) return Hit();
+		mark.t = (t2 > 0) ? t2 : t1;
+		mark.position = s + d * mark.t;
+		if (dot(mark.position - p, v) > h || dot(mark.position - p, v) < 0) return Hit();
 
-		hit.normal = normalize(hit.position - p - v * dot(hit.position - p, v));
-		hit.material = material;
-		return hit;
+		mark.normal = normalize(mark.position - p - v * dot(mark.position - p, v));
+		mark.material = material;
+		return mark;
 	}
 };
 
@@ -411,23 +411,14 @@ public:
 };
 
 FullScreenTexturedQuad* fullScreenTexturedQuad;
-std::vector<vec3> eyes;
 
 // Initialization, create an OpenGL context
 void onInitialization() {
 	glViewport(0, 0, windowWidth, windowHeight);
 	scene.build();
-
 	std::vector<vec4> image(windowWidth * windowHeight);
-	long timeStart = glutGet(GLUT_ELAPSED_TIME);
 	scene.render(image);
-	long timeEnd = glutGet(GLUT_ELAPSED_TIME);
-	printf("Rendering time: %d milliseconds\n", (int)(timeEnd - timeStart));
-
-	// copy image to GPU as a texture
 	fullScreenTexturedQuad = new FullScreenTexturedQuad(windowWidth, windowHeight, image);
-
-	// create program for the GPU
 	gpuProgram.create(vertexSource, fragmentSource, "fragmentColor");
 }
 
@@ -442,10 +433,7 @@ void onKeyboard(unsigned char key, int pX, int pY) {
 	if (key == 'a') {
 		scene.setCam();
 		std::vector<vec4> image(windowWidth * windowHeight);
-		long timeStart = glutGet(GLUT_ELAPSED_TIME);
 		scene.render(image);
-		long timeEnd = glutGet(GLUT_ELAPSED_TIME);
-		printf("Rendering time: %d milliseconds\n", (int)(timeEnd - timeStart));
 		fullScreenTexturedQuad = new FullScreenTexturedQuad(windowWidth, windowHeight, image);
 		glutPostRedisplay();
 	}
