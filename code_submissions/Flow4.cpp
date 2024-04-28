@@ -129,12 +129,10 @@ struct Cone : public Intersectable {
 
 	Hit intersect(const Ray& ray) {
 		Hit mark;
-		vec3 s = ray.start;
-		vec3 d = ray.dir;
-		vec3 z = s - p;
+		vec3 z = ray.start - p;
 		float cos_2 = cos(a) * cos(a);
-		float a = dot(d, n) * dot(d, n) - dot(d, d) * cos_2;
-		float b = 2 * dot(d, n) * dot(z, n) - 2 * dot(d, z) * cos_2;
+		float a = dot(ray.dir, n) * dot(ray.dir, n) - dot(ray.dir, ray.dir) * cos_2;
+		float b = 2 * dot(ray.dir, n) * dot(z, n) - 2 * dot(ray.dir, z) * cos_2;
 		float c = dot(z, n) * dot(z, n) - dot(z, z) * cos_2;
 		float dis = b * b - 4.0f * a * c;
 		if (dis < 0) return mark;
@@ -144,7 +142,7 @@ struct Cone : public Intersectable {
 		if (t1 <= 0 && t2 <= 0) return mark;
 
 		float t = (t2 > 0) ? t1 : t2;
-		vec3 pos = s + d * t;
+		vec3 pos = ray.start + ray.dir * t;
 		if (dot(pos - p, n) > h || dot(pos - p, n) < 0) return mark;
 
 		mark.t = t;
@@ -166,11 +164,9 @@ struct Cylinder : public Intersectable {
 
 	Hit intersect(const Ray& ray) {
 		Hit mark;
-		vec3 s = ray.start;
-		vec3 d = ray.dir;
-		vec3 z = s - p;
-		float a = dot(d, d) - 2 * powf(dot(d, v), 2) + powf(dot(d, v), 2) * dot(v, v);
-		float b = 2 * dot(d, z) - 4 * dot(d, v) * dot(v, z) + 2 * dot(d, v) * dot(v, v) * dot(v, z);
+		vec3 z = ray.start - p;
+		float a = dot(ray.dir, ray.dir) - 2 * powf(dot(ray.dir, v), 2) + powf(dot(ray.dir, v), 2) * dot(v, v);
+		float b = 2 * dot(ray.dir, z) - 4 * dot(ray.dir, v) * dot(v, z) + 2 * dot(ray.dir, v) * dot(v, v) * dot(v, z);
 		float c = -r * r - 2 * powf(dot(v, z), 2) + dot(v, v) * powf(dot(v, z), 2) + dot(z, z);
 		float dis = b * b - 4.0f * a * c;
 		if (dis < 0) return mark;
@@ -180,7 +176,7 @@ struct Cylinder : public Intersectable {
 		if (t1 <= 0 && t2 <= 0) return mark;
 
 		mark.t = (t2 > 0) ? t2 : t1;
-		mark.position = s + d * mark.t;
+		mark.position = ray.start + ray.dir * mark.t;
 		if (dot(mark.position - p, v) > h || dot(mark.position - p, v) < 0) return Hit();
 
 		mark.normal = normalize(mark.position - p - v * dot(mark.position - p, v));
@@ -190,19 +186,19 @@ struct Cylinder : public Intersectable {
 };
 
 class Camera {
-	vec3 eye, lookat, right, up;
+	vec3 e, l, r, u;
 public:
 	void set(vec3 _eye, vec3 _lookat, vec3 vup, float fov) {
-		eye = _eye;
-		lookat = _lookat;
-		vec3 w = eye - lookat;
+		e = _eye;
+		l = _lookat;
+		vec3 w = e - l;
 		float focus = length(w);
-		right = normalize(cross(vup, w)) * focus * tanf(fov / 2);
-		up = normalize(cross(w, right)) * focus * tanf(fov / 2);
+		r = normalize(cross(vup, w)) * focus * tanf(fov / 2);
+		u = normalize(cross(w, r)) * focus * tanf(fov / 2);
 	}
 	Ray getRay(int X, int Y) {
-		vec3 dir = lookat + right * (2.0f * (X + 0.5f) / windowWidth - 1) + up * (2.0f * (Y + 0.5f) / windowHeight - 1) - eye;
-		return Ray(eye, dir);
+		vec3 dir = l + r * (2.0f * (X + 0.5f) / windowWidth - 1) + u * (2.0f * (Y + 0.5f) / windowHeight - 1) - e;
+		return Ray(e, dir);
 	}
 };
 
@@ -278,13 +274,13 @@ public:
 	}
 
 	Hit firstIntersect(Ray ray) {
-		Hit bestHit;
+		Hit best;
 		for (Intersectable* object : objects) {
-			Hit hit = object->intersect(ray); //  hit.t < 0 if no intersection
-			if (hit.t > 0 && (bestHit.t < 0 || hit.t < bestHit.t))  bestHit = hit;
+			Hit mark = object->intersect(ray);
+			if (mark.t > 0 && (best.t < 0 || mark.t < best.t))  best = mark;
 		}
-		if (dot(ray.dir, bestHit.normal) > 0) bestHit.normal = bestHit.normal * (-1);
-		return bestHit;
+		if (dot(ray.dir, best.normal) > 0) best.normal = best.normal * (-1);
+		return best;
 	}
 
 	bool shadowIntersect(Ray ray) {	// for directional lights
@@ -314,35 +310,35 @@ public:
 	vec3 trace(Ray ray, int depth = 0) {
 		if (depth > 5) return La;
 
-		Hit hit = firstIntersect(ray);
-		if (hit.t < 0) return La;
+		Hit mark = firstIntersect(ray);
+		if (mark.t < 0) return La;
 
 		vec3 out = vec3(0, 0, 0);
-		Material m = *hit.material;
+		Material m = *mark.material;
 		if (!m.specular && !m.dioptric) {
-			out = hit.material->ka * La;
+			out = mark.material->ka * La;
 			for (Light* light : lights) {
-				Ray shadow(hit.position + hit.normal * epsilon, light->direction);
-				float cos = dot(hit.normal, light->direction);
+				Ray shadow(mark.position + mark.normal * epsilon, light->direction);
+				float cos = dot(mark.normal, light->direction);
 				if (cos > 0 && !shadowIntersect(shadow)) {
-					out = out + light->Le * hit.material->kd * cos;
-					cos = dot(hit.normal, normalize(-ray.dir + light->direction));
-					if (cos > 0) out = out + light->Le * hit.material->ks * powf(cos, hit.material->shininess);
+					out = out + light->Le * mark.material->kd * cos;
+					cos = dot(mark.normal, normalize(-ray.dir + light->direction));
+					if (cos > 0) out = out + light->Le * mark.material->ks * powf(cos, mark.material->shininess);
 				}
 			}
 		}
 		else {
-			float cos = -dot(hit.normal, ray.dir);
+			float cos = -dot(mark.normal, ray.dir);
 			if (m.specular) {
-				vec3 dir = ray.dir + 2 * hit.normal * cos;
-				Ray reflection = Ray(hit.position + epsilon * hit.normal, dir, ray.out);
+				vec3 dir = ray.dir + 2 * mark.normal * cos;
+				Ray reflection = Ray(mark.position + epsilon * mark.normal, dir, ray.out);
 				out = out + trace(reflection, depth + 1) * fres(cos, m);
 			}
 			if (m.dioptric) {
 				float io = ray.out ? m.n.x : 1 / m.n.x;
-				vec3 dir = bend(ray.dir, hit.normal, io);
+				vec3 dir = bend(ray.dir, mark.normal, io);
 				if (length(dir) > 0) {
-					Ray reflection(hit.position - hit.normal * epsilon, dir, !ray.out);
+					Ray reflection(mark.position - mark.normal * epsilon, dir, !ray.out);
 					out = out + trace(reflection, depth + 1) * (vec3(1, 1, 1) - fres(cos, m));
 				}
 			}
