@@ -1,0 +1,318 @@
+// NYILATKOZAT
+// ---------------------------------------------------------------------------------------------
+// Nev    : Csanyi Balazs
+// Neptun : BVG0EJ
+// ---------------------------------------------------------------------------------------------
+// ezennel kijelentem, hogy a feladatot magam keszitettem, es ha barmilyen segitseget igenybe vettem vagy
+// mas szellemi termeket felhasznaltam, akkor a forrast es az atvett reszt kommentekben egyertelmuen jeloltem.
+// A forrasmegjeloles kotelme vonatkozik az eloadas foliakat es a targy oktatoi, illetve a
+// grafhazi doktor tanacsait kiveve barmilyen csatornan (szoban, irasban, Interneten, stb.) erkezo minden egyeb
+// informaciora (keplet, program, algoritmus, stb.). Kijelentem, hogy a forrasmegjelolessel atvett reszeket is ertem,
+// azok helyessegere matematikai bizonyitast tudok adni. Tisztaban vagyok azzal, hogy az atvett reszek nem szamitanak
+// a sajat kontribucioba, igy a feladat elfogadasarol a tobbi resz mennyisege es minosege alapjan szuletik dontes.
+// Tudomasul veszem, hogy a forrasmegjeloles kotelmenek megsertese eseten a hazifeladatra adhato pontokat
+// negativ elojellel szamoljak el es ezzel parhuzamosan eljaras is indul velem szemben.
+//=============================================================================================
+
+#include "framework.h"
+
+// vertex shader in GLSL
+const char * vertexSource = R"(
+	#version 330
+    precision highp float;
+
+	uniform mat4 MVP;			// Model-View-Projection matrix in row-major format
+
+	layout(location = 0) in vec2 vertexPosition;	// Attrib Array 0
+
+	void main() {
+		gl_Position = vec4(vertexPosition.x, vertexPosition.y, 0, 1) * MVP; 		// transform to clipping space
+	}
+)";
+
+// fragment shader in GLSL
+const char * fragmentSource = R"(
+	#version 330
+    precision highp float;
+
+	uniform vec3 color;				// variable input: interpolated color of vertex shader
+	out vec4 fragmentColor;		// output that goes to the raster memory as told by glBindFragDataLocation
+
+	void main() {
+		fragmentColor = vec4(color, 1); // extend RGB to RGBA
+	}
+)";
+// a Camera2D osztály nagyrészt a moodle-n található példakód mintájára készült
+class Camera2D {
+    vec2 wCenter;
+    vec2 wSize;
+public:
+    Camera2D() : wCenter(0, 0), wSize(30, 30) { }
+    mat4 V() { return TranslateMatrix(-wCenter); }
+    mat4 P() { return ScaleMatrix(vec2(2 / wSize.x, 2 / wSize.y)); }
+    mat4 Vinv() { return TranslateMatrix(wCenter); }
+    mat4 Pinv() { return ScaleMatrix(vec2(wSize.x / 2, wSize.y / 2)); }
+    void Zoom(float s) { wSize = wSize * s; }
+    void Pan(vec2 t) { wCenter = wCenter + t; }
+};
+Camera2D camera;
+GPUProgram gpuProgram;
+int selectedPoint = -1;
+class Curve { // A 2021-es "Görbe szerkeszt?" videó alapján készítettem el a megoldásomat
+    unsigned int curveVao;
+    unsigned int cpsVao;
+    unsigned int curveVbo;
+    unsigned int cpsVbo;
+protected:
+    std::vector<vec2>   controlPoints;
+    std::vector<vec2>  curvePoints;
+    float tau = 0.0f;
+public:
+    virtual vec2 r(float t) = 0;
+    virtual float tEnd() = 0;
+    virtual float tStart() = 0;
+    void decreaseTau(){
+        tau-=0.1f;
+    }
+    void increaseTau(){
+        tau+=0.1f;
+    }
+    Curve() {
+        glGenVertexArrays(1, &curveVao);
+        glBindVertexArray(curveVao);
+        glGenBuffers(1, &curveVbo);
+        glBindBuffer(GL_ARRAY_BUFFER, curveVbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(vec2), NULL);
+        glGenVertexArrays(1, &cpsVao);
+        glBindVertexArray(cpsVao);
+        glGenBuffers(1, &cpsVbo);
+        glBindBuffer(GL_ARRAY_BUFFER, cpsVbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(vec2), NULL);
+    }
+    ~Curve(){
+        glDeleteBuffers(1, &curveVbo); glDeleteVertexArrays(1, &curveVao);
+        glDeleteBuffers(1, &cpsVbo); glDeleteVertexArrays(1, &cpsVao);
+    }
+    virtual void AddPoint(float cX, float cY) {
+        vec4 mVertex = vec4(cX, cY, 0, 1) * camera.Pinv() * camera.Vinv();
+        controlPoints.push_back(vec2(mVertex.x, mVertex.y));
+    }
+    int SelectPoint(float cX, float cY){
+        vec4 hVertex = vec4(cX, cY, 0, 1) * camera.Pinv() * camera.Vinv();
+        vec2 wVertex = vec2(hVertex.x, hVertex.y);
+        for(unsigned int p = 0; p < controlPoints.size(); p++){
+            if(dot(controlPoints[p] - wVertex, controlPoints[p] - wVertex) < 0.1) return p;
+        }
+        return -1;
+    }
+    void MoveControlPoint(int p, float cX, float cY) {
+        vec4 hVertex = vec4(cX, cY, 0, 1) * camera.Pinv() * camera.Vinv();
+        controlPoints[p] = vec2(hVertex.x, hVertex.y);
+    }
+    void Draw() {
+        mat4 MVPTransform = camera.V() * camera.P();
+        gpuProgram.setUniform(MVPTransform, "MVP");
+        if (controlPoints.size() > 0) {
+            glBindVertexArray(cpsVao);
+            glBindBuffer(GL_ARRAY_BUFFER, cpsVbo);
+            glBufferData(GL_ARRAY_BUFFER, controlPoints.size() * sizeof(vec2), &controlPoints[0], GL_DYNAMIC_DRAW);
+            gpuProgram.setUniform(vec3(1,0,0), "color");
+            glPointSize(10.0f);
+            glDrawArrays(GL_POINTS, 0, controlPoints.size());
+        }
+        if(controlPoints.size() >= 2){
+            std::vector<vec2> vertexData;
+            for(int i = 0; i < 100; i++){
+                float tNormalized = (float)i / 99;
+                float t = tStart() + (tEnd() - tStart()) * tNormalized;
+                vec2 wVertex = r(t);
+                vertexData.push_back(wVertex);
+            }
+            glBindVertexArray(curveVao);
+            glBindBuffer(GL_ARRAY_BUFFER, curveVbo);
+            glBufferData(GL_ARRAY_BUFFER, vertexData.size() * sizeof(vec2), &vertexData[0], GL_DYNAMIC_DRAW);
+            gpuProgram.setUniform(vec3(1,1,0), "color");
+            glLineWidth(2.0f);
+            glDrawArrays(GL_LINE_STRIP, 0, 100);
+        }
+    }
+};
+
+class Bezier : public Curve {
+//forrás: el?adás dia
+    float B(int i, float t) {
+        int n = controlPoints.size() - 1;
+        float choose = 1;
+        for (int j = 1; j <= i; j++) choose *= (float)(n - j + 1) / j;
+        return choose * powf(t, i) * powf(1 - t, n - i);
+    }
+public:
+    vec2 r(float t) {
+        vec2 rt(0, 0);
+        for (size_t i = 0; i < controlPoints.size(); i++) rt = rt + controlPoints[i] * B(i, t);
+        return rt;
+    }
+    float tStart() {
+        return 0;
+    }
+    float tEnd() {
+        return 1;
+    }
+};
+class Lagrange : public Curve{
+    std::vector<float> ts;
+    float L(int i, float t) {
+        float Li = 1.0f;
+        for(int j = 0; j < controlPoints.size(); j++)
+            if (j != i) Li *= (t - ts[j]) / (ts[i] - ts[j]);
+        return Li;
+    }
+public:
+    void AddPoint(float cX, float cY){
+        Curve::AddPoint(cX, cY);
+        ts.clear();
+        if (controlPoints.size() > 1) {
+            float max = 0.0f;
+            std::vector<float> dist;
+            for (int i = 0; i < controlPoints.size() - 1; ++i) {
+                float dst = sqrt(pow(controlPoints[i].x - controlPoints[i + 1].x, 2) + pow(controlPoints[i].y - controlPoints[i + 1].y, 2));
+                dist.push_back(dst);
+                max = max + dst;
+            }
+            ts.push_back(0.0f);
+            for (int i = 0; i < dist.size(); ++i) { ts.push_back(ts.back() + dist[i] / max); }
+        }
+    }
+    vec2 r(float t) override {
+        vec2 rt(0, 0);
+        for (int i = 0; i < controlPoints.size(); i++) {
+            rt = rt + controlPoints[i] * L(i, t);
+        }
+        return rt;
+    }
+    float tEnd() override {
+        return ts[controlPoints.size()-1];
+    }
+    float tStart() override {
+        return ts[0];
+    }
+};
+class Catmull : public Curve{
+    std::vector<float> ts;
+    vec2 Hermite(vec2 p0, vec2 v0, float t0, vec2 p1, vec2 v1, float t1, float t){
+        float deltat = t1 - t0;
+        t -= t0;
+        float deltat2 = deltat*deltat;
+        float deltat3 = deltat*deltat2;
+        vec2 a0 = p0, a1 = v0;
+        vec2 a2 = (p1 - p0) * 3 / deltat2 - (v1 + v0 * 2) / deltat;
+        vec2 a3 = (p0 - p1) * 2 / deltat3 + (v1 + v0) / deltat2;
+        return ((a3 * t + a2) * t + a1) * t + a0;
+    }
+public:
+    void AddPoint(float cX, float cY){
+        Curve::AddPoint(cX, cY);
+        ts.clear();
+        if (controlPoints.size() > 1) {
+            float max = 0.0f;
+            std::vector<float> dist;
+            for (int i = 0; i < controlPoints.size() - 1; ++i) {
+                float dst = sqrt(pow(controlPoints[i].x - controlPoints[i + 1].x, 2) + pow(controlPoints[i].y - controlPoints[i + 1].y, 2));
+                dist.push_back(dst);
+                max = max + dst;
+            }
+            ts.push_back(0.0f);
+            for (int i = 0; i < dist.size(); ++i) { ts.push_back(ts.back() + dist[i] / max); }
+        }
+    }
+    vec2 r(float t) override {
+        vec2 wPoint(0,0);
+        for(int i = 0; i < controlPoints.size() -1 ; i++){
+            if(ts[i] <= t && t <= ts[i+1]){
+                vec2 vPrev = (i > 0) ? (controlPoints[i] - controlPoints[i-1]) * (1.0f / (ts[i] - ts[i-1])) : vec2(0,0);
+                vec2 vCur = (controlPoints[i+1] - controlPoints[i]) / (ts[i+1] - ts[i]);
+                vec2 vNext = (i < controlPoints.size() - 2) ? (controlPoints[i+2] - controlPoints[i+1]) / (ts[i+2] - ts[i+1]) : vec2(0,0);
+                vec2 v0 = (vPrev + vCur) * (0.5f*(1-tau));
+                vec2 v1 = (vCur + vNext) * (0.5f*(1-tau));
+                return Hermite(controlPoints[i], v0, ts[i], controlPoints[i+1], v1, ts[i+1], t);
+            }
+        }
+        return controlPoints[0];
+    }
+    float tEnd() override {
+        return ts[controlPoints.size()-1];
+    }
+
+    float tStart() override {
+        return ts[0];
+    }
+};
+Curve* curve;
+void onInitialization() {
+    glViewport(0, 0, windowWidth, windowHeight);
+    curve = new Bezier();
+    gpuProgram.create(vertexSource, fragmentSource, "fragmentColor");
+}
+void onDisplay() {
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    curve->Draw();
+    glutSwapBuffers();
+}
+void onKeyboard(unsigned char key, int pX, int pY) {
+    switch (key) {
+        case 'P': camera.Pan(vec2(1, 0)); break;
+        case 'p': camera.Pan(vec2(-1, 0)); break;
+        case 'z': camera.Zoom(1/1.1f); break;
+        case 'Z': camera.Zoom(1.1f); break;
+        case 'b':
+            delete curve;
+            curve = new Bezier();
+             break;
+        case 'l':
+            delete curve;
+            curve = new Lagrange();
+            break;
+        case 'c':
+            delete curve;
+            curve = new Catmull();
+            break;
+        case 'T':
+            curve->increaseTau();
+            break;
+        case't':
+            curve->decreaseTau();
+            break;
+    }
+    glutPostRedisplay();
+}
+void onKeyboardUp(unsigned char key, int pX, int pY) {
+}
+void onMouse(int button, int state, int pX, int pY) {
+    if (button == GLUT_LEFT_BUTTON && state == GLUT_DOWN) {
+        float cX = 2.0f * pX / windowWidth - 1;
+        float cY = 1.0f - 2.0f * pY / windowHeight;
+        curve->AddPoint(cX, cY);
+        glutPostRedisplay();
+    }
+    if (button == GLUT_RIGHT_BUTTON && state == GLUT_DOWN) {
+        float cX = 2.0f * pX / windowWidth - 1;
+        float cY = 1.0f - 2.0f * pY / windowHeight;
+        selectedPoint = curve->SelectPoint(cX, cY);
+    }
+    if(button == GLUT_RIGHT_BUTTON && state == GLUT_UP){
+        selectedPoint = -1;
+    }
+}
+void onMouseMotion(int pX, int pY) {
+    float cX = 2.0f * pX / windowWidth - 1;
+    float cY = 1.0f - 2.0f * pY / windowHeight;
+    if (selectedPoint != -1) {
+        curve->MoveControlPoint(selectedPoint, cX, cY);
+        glutPostRedisplay();
+    }
+}
+void onIdle() {
+}
